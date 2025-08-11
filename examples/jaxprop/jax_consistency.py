@@ -1,7 +1,7 @@
 import numpy as np
 import jax
-import coolpropx as cpx
-from coolpropx.jaxprop import get_props  # adjust path
+import coolprop as cpx
+from coolprop.jaxprop import get_props
 
 # baseline (PT)
 fluid = cpx.Fluid(name="nitrogen", backend="HEOS")

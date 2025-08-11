@@ -13,13 +13,14 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import coolpropx as cpx
+import coolpropx.perfect_gas as pg
 
 cpx.set_plot_options()
 
 
 # --------------------------- get constants -------------------------- #
 
-constants = cpx.compute_perfect_gas_constants("air", 298.15, 101_325.0, display=False)
+constants = pg.get_perfect_gas_constants("air", 298.15, 101_325.0, display=False)
 print(f"\nPerfect-gas constants:")
 cpx.print_dict(constants)
 
@@ -28,30 +29,30 @@ cpx.print_dict(constants)
 # Property calculation using (p, T)
 P0 = 101_325.0  # Pa
 T0 = 300.0      # K
-state_PT = cpx.perfect_gas_props("PT_INPUTS", P0, T0, constants)
+state_PT = pg.get_props(cpx.PT_INPUTS, P0, T0, constants)
 print(f"\nState from PT (p = {P0:.0f} Pa, T = {T0:.2f} K)")
 cpx.print_dict(state_PT)
 
 # Property calculation using (h, s)
 H = state_PT["h"]
 S = state_PT["s"]
-state_hs = cpx.perfect_gas_props("HmassSmass_INPUTS", H, S, constants)
+state_hs = pg.get_props(cpx.HmassSmass_INPUTS, H, S, constants)
 print("\nState from HmassSmass (h, s)")
 cpx.print_dict(state_hs)
 
 # Property calculation using (h, p)
-state_hP = cpx.perfect_gas_props("HmassP_INPUTS", H, P0, constants)
+state_hP = pg.get_props(cpx.HmassP_INPUTS, H, P0, constants)
 print("\nState from HmassP (h, p)")
 cpx.print_dict(state_hP)
 
 # Property calculation using (p, s)
-state_Ps = cpx.perfect_gas_props("PSmass_INPUTS", P0, S, constants)
+state_Ps = pg.get_props(cpx.PSmass_INPUTS, P0, S, constants)
 print("\nState from PSmass (p, s)")
 cpx.print_dict(state_Ps)
 
 # Property calculation using (rho, h)
 rho0 = state_PT["d"]
-state_rhoh = cpx.perfect_gas_props("DmassHmass_INPUTS", rho0, H, constants)
+state_rhoh = pg.get_props(cpx.DmassHmass_INPUTS, rho0, H, constants)
 print("\nState from DmassHmass (rho, h)")
 cpx.print_dict(state_rhoh)
 
@@ -59,7 +60,7 @@ cpx.print_dict(state_rhoh)
 
 # Compute viscosity over the temperature range
 T_range = np.linspace(300.0, 1000.0, 200)
-mu_vals = cpx.viscosity_from_T(T_range, constants)
+mu_vals = pg.viscosity_from_T(T_range, constants)
 
 # Create figure
 fig, ax = plt.subplots(figsize=(6, 5))

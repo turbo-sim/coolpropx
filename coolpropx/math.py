@@ -1,5 +1,7 @@
-import numpy as np
+# import numpy as np
 
+from .jax_import import jnp
+np = jnp
 
 def smooth_maximum(x1, x2, method="boltzmann", alpha=10):
     r"""

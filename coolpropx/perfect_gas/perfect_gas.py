@@ -1,11 +1,12 @@
 from .. import fluid_properties as fp
+from ..core_calculations import PROPERTY_ALIAS
 from ..jax_import import jax, jnp, JAX_AVAILABLE
-
+from functools import partial
 
 # ----------------------------------------------------------------------------- #
 # Constant generation and Sutherland estimation
 # ----------------------------------------------------------------------------- #
-def compute_perfect_gas_constants(fluid_name, T_ref, P_ref, dT=100.0, display=False):
+def get_perfect_gas_constants(fluid_name, T_ref, P_ref, dT=100.0, display=False):
     """
     Compute perfect gas constants from a real-fluid model at a reference state,
     and estimate Sutherland constants using offset temperatures.
@@ -166,6 +167,10 @@ def temperature_from_Ps(P, s, constants):
     exponent = ((s - s_ref) + (R * jnp.log(P / P_ref))) / cp
     return jnp.maximum(1.0, T_ref * jnp.exp(exponent))
 
+def temperature_from_rhoP(rho, p, constants):
+    R = constants["R"]
+    return jnp.maximum(1.0, p / (rho * R))
+
 def viscosity_from_T(T, constants):
     mu_ref = constants["mu_ref"]
     T_ref = constants["T_ref"]
@@ -202,8 +207,8 @@ def entropy_from_rhoP(rho, P, constants):
 # ----------------------------------------------------------------------------- #
 
 def calculate_properties_PT(P, T, constants):
-    if T <= 0 or P <= 0:
-        raise ValueError("Temperature and pressure must be positive.")
+    T = jnp.maximum(T, 0.1)
+    P = jnp.maximum(P, 0.1)
     R = constants["R"]
     rho = P / (R * T)
     cp, _ = specific_heat(constants)
@@ -244,20 +249,38 @@ def calculate_properties_rhoh(rho, h, constants):
     s = entropy_from_rhoP(rho, P, constants)
     return assemble_properties(T, P, rho, h, s, constants)
 
+def calculate_properties_rhop(rho, P, constants):
+    cp, _ = specific_heat(constants)
+    T = temperature_from_rhoP(rho, P, constants)
+    h = cp * T
+    s = entropy_from_rhoP(rho, P, constants)
+    return assemble_properties(T, P, rho, h, s, constants)
+
 def assemble_properties(T, P, rho, h, s, constants):
+    R = constants["R"]
+    gamma = constants["gamma"]
     props = {
         "T": T,
         "p": P,
         "d": rho,
+        "rho": rho,
         "h": h,
         "s": s,
         "mu": viscosity_from_T(T, constants),
         "k": conductivity_from_T(T, constants),
         "a": speed_of_sound_from_T(T, constants),
-        "gamma": constants["gamma"],
+        "gamma": gamma,
+        "cp": gamma * R / (gamma - 1),
+        "cv": R / (gamma - 1),
+        "Z": 1.0,
+        "gruneisen": gamma - 1
     }
-    # for alias, original in PROPERTY_ALIAS.items():
-    #     props[alias] = props[original]
+    for original, alias in PROPERTY_ALIAS.items():
+        if original not in props:
+            continue
+        else:
+            props[alias] = props[original]
+            
     return props
 
 
@@ -266,51 +289,31 @@ def assemble_properties(T, P, rho, h, s, constants):
 # State evaluators (public API)
 # ----------------------------------------------------------------------------- #
 
+jit_PT   = jax.jit(lambda a,b,c: calculate_properties_PT(a,b,c))
+jit_hs   = jax.jit(lambda a,b,c: calculate_properties_hs(a,b,c))
+jit_hP   = jax.jit(lambda a,b,c: calculate_properties_hP(a,b,c))
+jit_Ps   = jax.jit(lambda a,b,c: calculate_properties_Ps(a,b,c))
+jit_rhoh = jax.jit(lambda a,b,c: calculate_properties_rhoh(a,b,c))
+jit_rhop = jax.jit(lambda a,b,c: calculate_properties_rhop(a,b,c))
+
 PROPERTY_CALCULATORS = {
-    "HmassSmass_INPUTS": calculate_properties_hs,
-    "PSmass_INPUTS":     calculate_properties_Ps,
-    "PT_INPUTS":         calculate_properties_PT,
-    "HmassP_INPUTS":     calculate_properties_hP,
-    "DmassHmass_INPUTS": calculate_properties_rhoh,
+    fp.PT_INPUTS: jit_PT,
+    fp.HmassSmass_INPUTS: jit_hs,
+    fp.HmassP_INPUTS: jit_hP,
+    fp.PSmass_INPUTS: jit_Ps,
+    fp.DmassHmass_INPUTS: jit_rhoh,
+    fp.DmassP_INPUTS: jit_rhop,
 }
 
-def _all_valid(props):
-    for v in props.values():
-        arr = jnp.asarray(v)
-        if not jnp.all(jnp.isfinite(arr)) or jnp.any(jnp.iscomplex(arr)):
-            return False
-    return True
-
-def perfect_gas_props(input_pair, prop1, prop2, constants):
-    # Ensure type consistency in subsequent calculation
-    prop1 = jnp.asarray(prop1)
-    prop2 = jnp.asarray(prop2)
-
-    # Resolve the type of input pair
-    calculator = PROPERTY_CALCULATORS.get(input_pair)
-    if calculator is None:
-        valid_inputs = ", ".join(PROPERTY_CALCULATORS.keys())
-        raise ValueError(f"unknown input state: '{input_pair}'. valid options: {valid_inputs}")
-    
-     # Compute fluid properties
-    properties = calculator(prop1, prop2, constants)
-
-    # Check if anything is wrong
-    if not _all_valid(properties):
-        raise ValueError(f"invalid properties from inputs prop1={prop1}, prop2={prop2}")
-
-    return properties
-
-
-
-
+def get_props(input_pair, prop1, prop2, constants):
+    return PROPERTY_CALCULATORS[input_pair](prop1, prop2, constants)
 
 
 # ----------------------------------------------------------------------------- #
 # Gradient calculations (only used when JAX is installed)
 # ----------------------------------------------------------------------------- #
 
-def perfect_gas_gradient(input_pair, constants, x, y, method="auto", eps_rel=1e-6):
+def get_props_gradient(input_pair, constants, x, y, method="auto", eps_rel=1e-6):
     """
     Return (d/dx, d/dy) dictionaries of partials for perfect_gas_props at (x, y).
 
@@ -319,7 +322,7 @@ def perfect_gas_gradient(input_pair, constants, x, y, method="auto", eps_rel=1e-
     """
     # local wrapper: f(x, y) -> dict
     def f(a, b):
-        return perfect_gas_props(input_pair, a, b, constants)
+        return get_props(input_pair, a, b, constants)
 
     # choose method
     use_jax = (method == "jax") or (method == "auto" and JAX_AVAILABLE)

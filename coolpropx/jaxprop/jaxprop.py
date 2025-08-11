@@ -1,71 +1,92 @@
+# coolpropx/jaxprop.py
+from __future__ import annotations
 from functools import partial
-import numpy as np
+import math
+import jax
+import jax.numpy as jnp
 
-from ..fluid_properties import INPUT_PAIR_MAP
-from ..jax_import import jax, jnp, JAX_AVAILABLE
+# properties you need; keep this fixed
+_WANTED = (
+    "p",
+    "T",
+    "rho",
+    "d",
+    "u",
+    "h",
+    "s",
+    "a",
+    "gruneisen",
+    "mu",
+    "k",
+    "cp",
+    "cv",
+    "gamma",
+)
+
+# output template for pure_callback (shapes/dtypes must be static)
+_TEMPLATE = {k: jax.ShapeDtypeStruct((), jnp.float64) for k in _WANTED}
 
 
-def _sanitize(props, sentinel=-1.0):
+def _to_scalar64(x) -> float:
+    """robust cast to finite float; otherwise NaN"""
+    try:
+        xf = float(x)
+        return xf if math.isfinite(xf) else float("nan")
+    except Exception:
+        return float("nan")
+
+
+def _props_py(input_state, p1, p2, fluid) -> dict[str, float]:
+    """Runs on host (Python). Returns plain floats."""
+    p1f = float(jnp.squeeze(p1))
+    p2f = float(jnp.squeeze(p2))
+    st = fluid.get_state(input_state, p1f, p2f).to_dict()
+    return {k: _to_scalar64(st.get(k)) for k in _WANTED}
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(0, 3))
+def get_props(input_state, prop1, prop2, fluid):
     """
-    Convert a dict of CoolProp FluidState values to JAX-compatible scalars.
+    CoolProp-backed properties usable under jit/grad.
 
-    Parameters
-    ----------
-    props : dict
-        Dictionary of fluid properties, typically from `FluidState.to_dict()`.
-    sentinel : float, optional
-        Value used to replace non-numeric or invalid entries. Default is -1.0.
-
-    Returns
-    -------
-    dict
-        Dictionary with the same keys, but all values converted to
-        `jnp.float64` scalars. Any invalid values are replaced by `sentinel`.
+    Differentiable w.r.t. (prop1, prop2) via a custom JVP (finite differences).
+    input_state and fluid are non-differentiable static args.
     """
-    out = {}
-    for k, v in props.items():
-        if not isinstance(v, (float, int)) or not np.isfinite(v):
-            out[k] = jnp.asarray(sentinel, dtype=jnp.float64)
-        else:
-            out[k] = jnp.asarray(float(v), dtype=jnp.float64)
-    return out
+
+    def _cb(p1, p2):
+        # returns dict[str, float]; pure_callback will map to jnp scalars using _TEMPLATE
+        return _props_py(input_state, p1, p2, fluid)
+
+    return jax.pure_callback(_cb, _TEMPLATE, prop1, prop2)
 
 
+@get_props.defjvp
+def _get_props_jvp(input_state, fluid, primals, tangents):
+    p1, p2 = primals
+    p1_dot, p2_dot = tangents
 
-if JAX_AVAILABLE:
-    @partial(jax.custom_jvp, nondiff_argnums=(0, 3))
-    def get_props(input_state, prop1, prop2, fluid):
-        """CoolProp-backed properties; JAX-differentiable w.r.t. (prop1, prop2)."""
-        state_dict = fluid.get_state(input_state, prop1, prop2).to_dict()
-        return _sanitize(state_dict)
+    # relative step with floor for stability
+    eps1 = 1e-6 * (jnp.abs(p1) + 1.0)
+    eps2 = 1e-6 * (jnp.abs(p2) + 1.0)
 
-    @get_props.defjvp
-    def _get_props_jvp(input_state, fluid, primals, tangents):
-        """
-        Custom JVP rule for get_props, using finite differences for derivatives.
+    # single generic python callback; no tracers captured
+    def _cb(p1v, p2v):
+        return _props_py(input_state, p1v, p2v, fluid)
 
-        This approach sanitizes all states first so that derivative computations
-        do not need to handle NaN, None, strings, or bools.
-        """
-        p1, p2 = primals
-        p1_dot, p2_dot = tangents
+    # primal at (p1, p2)
+    base = jax.pure_callback(_cb, _TEMPLATE, p1, p2)
 
-        delta_p1 = 1e-6 * p1
-        delta_p2 = 1e-6 * p2
+    # forward-diff samples: pass the already-perturbed args to pure_callback
+    p1p = jax.pure_callback(_cb, _TEMPLATE, p1 + eps1, p2)
+    p2p = jax.pure_callback(_cb, _TEMPLATE, p1, p2 + eps2)
 
-        # Sanitize all states right after retrieval
-        base_state = _sanitize(fluid.get_state(input_state, p1, p2).to_dict())
-        state_p1   = _sanitize(fluid.get_state(input_state, p1 + delta_p1, p2).to_dict())
-        state_p2   = _sanitize(fluid.get_state(input_state, p1, p2 + delta_p2).to_dict())
+    # directional derivative
+    df_dp1 = {k: (p1p[k] - base[k]) / eps1 for k in _WANTED}
+    df_dp2 = {k: (p2p[k] - base[k]) / eps2 for k in _WANTED}
+    jvp = {k: df_dp1[k] * p1_dot + df_dp2[k] * p2_dot for k in _WANTED}
 
-        # Compute partial derivatives (safe because all bad values are replaced)
-        df_dprop1 = {k: (state_p1[k] - base_state[k]) / delta_p1 for k in base_state}
-        df_dprop2 = {k: (state_p2[k] - base_state[k]) / delta_p2 for k in base_state}
+    return base, jvp
 
-        # Directional derivative
-        jvp = {k: df_dprop1[k] * p1_dot + df_dprop2[k] * p2_dot for k in base_state}
-
-        return base_state, jvp
 
 
     # It seems that the nice custom derivative with alpha will not work because of how JAX tracing works
@@ -102,4 +123,3 @@ if JAX_AVAILABLE:
     #     jvp = {k: alpha * (plus_state[k] - base_state[k]) for k in base_state}
 
     #     return base_state, jvp
-

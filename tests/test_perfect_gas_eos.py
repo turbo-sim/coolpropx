@@ -2,6 +2,7 @@ import os
 import pytest
 import numpy as np
 import coolpropx as cpx
+import coolpropx.perfect_gas as pg
 
 import jax
 from scipy.optimize._numdiff import approx_derivative
@@ -15,17 +16,18 @@ PROP_KEYS = ("T", "p", "d", "h", "s", "mu", "k", "a", "gamma")
 
 # input types to exercise
 INPUT_TYPES = [
-    "HmassSmass_INPUTS",
-    "HmassP_INPUTS",
-    "PSmass_INPUTS",
-    "DmassHmass_INPUTS",
+    cpx.HmassSmass_INPUTS,
+    cpx.HmassP_INPUTS,
+    cpx.PSmass_INPUTS,
+    cpx.DmassHmass_INPUTS,
+    cpx.DmassP_INPUTS,
 ]
 
 # reference cases (pressures in Pa, temperatures in K)
 CASES = [
-    {"id": "air-300K-100kPa",      "fluid": "air",      "T": 300.0, "p": 1e5},
-    {"id": "nitrogen-300K-100kPa", "fluid": "nitrogen", "T": 300.0, "p": 1e5},
-    {"id": "water-300K-1kPa",      "fluid": "water",    "T": 300.0, "p": 1e3},
+    {"id": "air-300K-100kPa",       "fluid": "air",      "T": 300.0, "p": 1e5},
+    {"id": "nitrogen-300K-100kPa",  "fluid": "nitrogen", "T": 300.0, "p": 1e5},
+    {"id": "water-300K-1kPa",       "fluid": "water",    "T": 300.0, "p": 1e3},
     {"id": "CO2-800K-10000kPa",     "fluid": "co2",     "T": 800.0, "p": 100e5},
 ]
 
@@ -36,10 +38,10 @@ def case(request):
     """Provides one fluid reference case at a time and its perfect-gas constants."""
     c = request.param
     # compute constants at the requested reference state
-    constants = cpx.compute_perfect_gas_constants(c["fluid"], c["T"], c["p"], display=False)
+    constants = pg.get_perfect_gas_constants(c["fluid"], c["T"], c["p"], display=False)
 
     # sanity: force the baseline to exactly this PT
-    ref = cpx.perfect_gas_props("PT_INPUTS", c["p"], c["T"], constants)
+    ref = pg.get_props(cpx.PT_INPUTS, c["p"], c["T"], constants)
 
     return {
         "metadata": c,           # id, fluid, T, p
@@ -59,18 +61,20 @@ def test_perfect_gas_multi_reference(input_type, case):
     cid = case["metadata"]["id"]
 
     # choose inputs for each solver
-    if input_type == "HmassSmass_INPUTS":
+    if input_type == cpx.HmassSmass_INPUTS:
         v1, v2 = case["h"], case["s"]
-    elif input_type == "HmassP_INPUTS":
+    elif input_type == cpx.HmassP_INPUTS:
         v1, v2 = case["h"], case["p"]
-    elif input_type == "PSmass_INPUTS":
+    elif input_type == cpx.PSmass_INPUTS:
         v1, v2 = case["p"], case["s"]
-    elif input_type == "DmassHmass_INPUTS":
+    elif input_type == cpx.DmassHmass_INPUTS:
         v1, v2 = case["rho"], case["h"]
+    elif input_type == cpx.DmassP_INPUTS:
+        v1, v2 = case["rho"], case["p"]
     else:
         pytest.skip(f"unhandled input_type: {input_type}")
 
-    test_vals = cpx.perfect_gas_props(input_type, v1, v2, constants)
+    test_vals = pg.get_props(input_type, v1, v2, constants)
 
     for k in PROP_KEYS:
         value_calc = np.asarray(test_vals[k])
@@ -95,14 +99,16 @@ def test_perfect_gas_derivatives(input_type, case):
     cid = case["metadata"]["id"]
 
     # choose inputs for each solver
-    if input_type == "HmassSmass_INPUTS":
+    if input_type == cpx.HmassSmass_INPUTS:
         v1, v2 = case["h"], case["s"]
-    elif input_type == "HmassP_INPUTS":
+    elif input_type == cpx.HmassP_INPUTS:
         v1, v2 = case["h"], case["p"]
-    elif input_type == "PSmass_INPUTS":
+    elif input_type == cpx.PSmass_INPUTS:
         v1, v2 = case["p"], case["s"]
-    elif input_type == "DmassHmass_INPUTS":
+    elif input_type == cpx.DmassHmass_INPUTS:
         v1, v2 = case["rho"], case["h"]
+    elif input_type == cpx.DmassP_INPUTS:
+        v1, v2 = case["rho"], case["p"]
     else:
         pytest.skip(f"unhandled input_type: {input_type}")
 
@@ -112,7 +118,7 @@ def test_perfect_gas_derivatives(input_type, case):
     for k in PROP_KEYS:
         # differentiable wrapper to get property k
         def prop_fun(x):
-            out = cpx.perfect_gas_props(input_type, x[0], x[1], constants)
+            out = pg.get_props(input_type, x[0], x[1], constants)
             return out[k]
 
         # JAX forward-mode gradient

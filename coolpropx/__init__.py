@@ -16,8 +16,9 @@ from .graphics import *
 from .utils import *
 
 
-# from . import perfect_gas
-from .perfect_gas import *
+from . import perfect_gas
+from . import jax_import
+# from .perfect_gas import *
 
 
 # Package info

@@ -1,19 +1,20 @@
 import numpy as np
 import coolpropx as cpx
+import coolpropx.perfect_gas as pg
 
 # config
-input_pair = "HmassP_INPUTS"
+input_pair = cpx.HmassP_INPUTS
 h = 3.00e5    # J/kg
 p = 101325.0  # Pa
 
 # constants for air
 try:
-    constants = cpx.GAS_CONSTANTS_AIR
+    constants = pg.GAS_CONSTANTS_AIR
 except AttributeError:
-    constants = cpx.compute_perfect_gas_constants("air", 298.15, 101325.0, display=False)
+    constants = pg.get_perfect_gas_constants("air", 298.15, 101325.0, display=False)
 
 # base state
-base = cpx.perfect_gas_props(input_pair, h, p, constants)
+base = pg.get_props(input_pair, h, p, constants)
 print("base state:")
 print(f"  T   : {float(base['T']):+0.6f} K")
 print(f"  p   : {float(base['p']):+0.6f} Pa")
@@ -22,10 +23,10 @@ print(f"  h   : {float(base['h']):+0.6f} J/kg")
 print(f"  s   : {float(base['s']):+0.6f} J/(kg K)")
 
 # finite differences jacobian
-dfdx_fd, dfdp_fd = cpx.perfect_gas_gradient(input_pair, constants, h, p, method="fd")
+dfdx_fd, dfdp_fd = pg.get_props_gradient(input_pair, constants, h, p, method="fd")
 
 # jax jacobian (will crash if jax is not installed)
-dfdx_jax, dfdp_jax = cpx.perfect_gas_gradient(input_pair, constants, h, p, method="jax")
+dfdx_jax, dfdp_jax = pg.get_props_gradient(input_pair, constants, h, p, method="jax")
 
 print("\npartials (finite differences):")
 print(f"  dT/dh|p   : {float(dfdx_fd['T']):+0.10e} K*kg/J")
@@ -51,7 +52,7 @@ print(f"  drho/dh|p : {rel(dfdx_fd['d'], dfdx_jax['d']):+0.10e}")
 print(f"  drho/dp|h : {rel(dfdp_fd['d'], dfdp_jax['d']):+0.10e}")
 
 # identity checks using FD results
-cp, _ = cpx.specific_heat(constants)
+cp, _ = pg.specific_heat(constants)
 R = constants["R"]
 T = float(base["T"])
 

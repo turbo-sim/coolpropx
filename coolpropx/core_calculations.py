@@ -15,6 +15,7 @@ PROPERTY_ALIAS = {
     "rho": "rhomass",
     "density": "rhomass",
     "d": "rhomass",
+    "rhomass": "rho",
     "dmass": "rhomass",
     "u": "umass",
     "h": "hmass",
@@ -91,6 +92,10 @@ def compute_properties_1phase(
     props["viscosity"] = get_viscosity(AS)
     props["conductivity"] = get_conductivity(AS)
     props["surface_tension"] = np.nan
+
+    # Compute Gruneisen parameter
+    temp = props["isobaric_expansion_coefficient"] / props["isothermal_compressibility"]
+    props["gruneisen"] = temp / (props["rhomass"] * props["cvmass"])
 
     # Generalized quality outside the two-phase region
     if generalize_quality:
@@ -465,6 +470,11 @@ def compute_properties_metastable_rhoT(
     props["viscosity"] = get_viscosity(AS)
     props["conductivity"] = get_conductivity(AS)
     props["surface_tension"] = np.nan
+
+
+    # Compute Gruneisen parameter
+    temp = props["isobaric_expansion_coefficient"] / props["isothermal_compressibility"]
+    props["gruneisen"] = temp / (props["rhomass"] * props["cvmass"])
 
     if supersaturation:
         props = calculate_supersaturation(AS, props)
