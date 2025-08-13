@@ -4,8 +4,8 @@
 # - a^2        ≈ (dp/dρ)_s
 
 import jax
-import coolprop as cpx
-from coolprop.jaxprop import get_props  # your JAX bridge
+import coolpropx as cpx
+from coolpropx.jaxprop import get_props  # your JAX bridge
 
 def rel_err(val, ref):
     denom = max(1.0, abs(ref))

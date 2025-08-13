@@ -89,37 +89,37 @@ def _get_props_jvp(input_state, fluid, primals, tangents):
 
 
 
-    # It seems that the nice custom derivative with alpha will not work because of how JAX tracing works
-    # p1_dot and p2_dot are tracers, not numerical values, and therefore cannot be passed to coolprop
+# # It seems that the nice custom derivative with alpha will not work because of how JAX tracing works
+# # p1_dot and p2_dot are tracers, not numerical values, and therefore cannot be passed to coolprop
 
-    # @get_props.defjvp
-    # def _get_props_jvp(input_state, fluid, primals, tangents):
-    #     """
-    #     Custom JVP (forward-mode) using a directional, scale-aware finite difference:
+# @get_props.defjvp
+# def _get_props_jvp(input_state, fluid, primals, tangents):
+#     """
+#     Custom JVP (forward-mode) using a directional, scale-aware finite difference:
 
-    #         alpha = sqrt( (p1_dot/d1)^2 + (p2_dot/d2)^2 )   with d1,d2 ~ reference scales
-    #         step  = (p1_dot/alpha, p2_dot/alpha)
-    #         jvp   = alpha * (f(p + step) - f(p))
+#         alpha = sqrt( (p1_dot/d1)^2 + (p2_dot/d2)^2 )   with d1,d2 ~ reference scales
+#         step  = (p1_dot/alpha, p2_dot/alpha)
+#         jvp   = alpha * (f(p + step) - f(p))
 
-    #     This keeps the step aligned with the tangent, with size set by the
-    #     reference magnitudes to avoid poor conditioning.
-    #     """
-    #     p1, p2 = primals
-    #     p1_dot, p2_dot = tangents
+#     This keeps the step aligned with the tangent, with size set by the
+#     reference magnitudes to avoid poor conditioning.
+#     """
+#     p1, p2 = primals
+#     p1_dot, p2_dot = tangents
 
-    #     # Try to pull per-variable scales from reference_state, fallback to |p| or 1.0
-    #     name_1, name_2 = INPUT_PAIR_MAP[input_state]
-    #     delta_p1 = 1e-6 * fluid.reference_state[name_1]
-    #     delta_p2 = 1e-6 * fluid.reference_state[name_2]
-    #     alpha = jnp.sqrt((p1_dot/delta_p1)**2 + (p2_dot/delta_p2)**2)
+#     # Try to pull per-variable scales from reference_state, fallback to |p| or 1.0
+#     name_1, name_2 = INPUT_PAIR_MAP[input_state]
+#     delta_p1 = 1e-6 * fluid.reference_state[name_1]
+#     delta_p2 = 1e-6 * fluid.reference_state[name_2]
+#     alpha = jnp.sqrt((p1_dot/delta_p1)**2 + (p2_dot/delta_p2)**2)
 
-    #     # Base and "plus" states (sanitize once so diffs are safe)
-    #     p1f = p1 + (p1_dot / alpha)
-    #     p2f = p2 + (p2_dot / alpha)
-    #     base_state = _sanitize(fluid.get_state(input_state, p1, p2).to_dict())
-    #     plus_state = _sanitize(fluid.get_state(input_state, p1f, p2f).to_dict())
+#     # Base and "plus" states (sanitize once so diffs are safe)
+#     p1f = p1 + (p1_dot / alpha)
+#     p2f = p2 + (p2_dot / alpha)
+#     base_state = _sanitize(fluid.get_state(input_state, p1, p2).to_dict())
+#     plus_state = _sanitize(fluid.get_state(input_state, p1f, p2f).to_dict())
 
-    #     # Directional 
-    #     jvp = {k: alpha * (plus_state[k] - base_state[k]) for k in base_state}
+#     # Directional 
+#     jvp = {k: alpha * (plus_state[k] - base_state[k]) for k in base_state}
 
-    #     return base_state, jvp
+#     return base_state, jvp

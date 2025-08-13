@@ -1,7 +1,7 @@
 import numpy as np
 import jax
-import coolprop as cpx
-from coolprop.jaxprop import get_props
+import coolpropx as cpx
+from coolpropx.jaxprop import get_props
 
 # baseline (PT)
 fluid = cpx.Fluid(name="nitrogen", backend="HEOS")
@@ -13,7 +13,6 @@ input_state = cpx.HmassP_INPUTS
 h0, p0 = ref["h"], ref["p"]
 
 # primals
-print(fluid)
 st = get_props(input_state, h0, p0, fluid)
 print("state (HmassP_INPUTS):")
 for k in ("T", "p", "d", "h", "s", "a", "mu", "k", "gamma"):

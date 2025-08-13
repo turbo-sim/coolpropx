@@ -1,6 +1,6 @@
 # ======================== Imports ========================
-import os
-import psutil
+# import os
+# import psutil
 import time
 import jax
 import jax.numpy as jnp
@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 from functools import partial
 
 # ======================== Config ========================
-NCORES = psutil.cpu_count(logical=False)
-os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={NCORES}"
-jax.config.update("jax_enable_x64", True)
+# NCORES = psutil.cpu_count(logical=False)
+# os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={NCORES}"
+# jax.config.update("jax_enable_x64", True)
 
 # Global precision
 float64 = jnp.dtype("float64")

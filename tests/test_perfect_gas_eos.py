@@ -55,7 +55,7 @@ def case(request):
     }
 
 @pytest.mark.parametrize("input_type", INPUT_TYPES, ids=INPUT_TYPES)
-def test_perfect_gas_multi_reference(input_type, case):
+def test_perfect_gas_consistency(input_type, case):
     constants = case["constants"]
     ref_vals = case["ref"]
     cid = case["metadata"]["id"]
