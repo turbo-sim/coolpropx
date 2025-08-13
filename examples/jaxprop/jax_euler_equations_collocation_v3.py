@@ -1,9 +1,9 @@
 from __future__ import annotations
 import jax
+import jax.tree_util
 import jax.numpy as jnp
 import optimistix as opx
 import matplotlib.pyplot as plt
-from jax.tree_util import tree_map
 import equinox as eqx
 import coolpropx as cpx
 
@@ -11,9 +11,11 @@ from time import perf_counter
 
 jax.config.update("jax_enable_x64", True)
 
-
 cpx.set_plot_options()
-from diffrax_nozzle_single_phase_v3 import nozzle_single_phase_core
+
+# Import specific functions
+from coolpropx.perfect_gas import get_props
+from examples.jaxprop.nozzle_model_core import nozzle_single_phase_core
 
 
 # This code works like a charm.
@@ -23,19 +25,22 @@ from diffrax_nozzle_single_phase_v3 import nozzle_single_phase_core
 # The boundary conditions given to the model are [p0_in, d0_in, Ma_in]
 # The are converted into the corresponding values of [u, ln(p), ln(d)] at the beginning of the calculations in order to impose the latter in the BC residuals
 
+# v3 This function calculates the maximum with a Newton root finder initialized with softwmax
+# It converges like a charm for decent number of nordes
+# Using continuation, it can converge to extremely tight Mach numbers with just a couple of steps
 
 
 # ---------- Main function call ----------
-@eqx.filter_jit
-def solve_nozzle_model(
+# @eqx.filter_jit
+def solve_nozzle_model_collocation(
+    z0,
     params,
     fluid,
     wall_friction=False,
     heat_transfer=False,
-    initial_guess=None,
     num_points=50,
-    rtol=1e-10,
-    atol=1e-10,
+    rtol=1e-8,
+    atol=1e-8,
     max_steps=200,
     jac_mode="bwd",
     verbose=False,
@@ -48,21 +53,10 @@ def solve_nozzle_model(
     ode_args = (length, eps_wall, T_wall, wall_friction, heat_transfer, fluid)
 
     # Compute the inlet boundary condition iteratively
-    Ma_in = params["Ma_in"]
-    p0_in = params["p0_in"]
-    p0_in = params["p0_in"]
-    d0_in = params["d0_in"]
-    state_in = compute_static_state(p0_in, d0_in, Ma_in, fluid)
-    inlet_bc = (Ma_in * state_in["a"], jnp.log(state_in["d"]), jnp.log(state_in["p"]))
+    boundary_conditions = (params["p0_in"], params["d0_in"], params["Ma_target"])
 
     # Compute the Chebyshev basis” (only once per call)
     x, D = chebyshev_lobatto_basis(num_points, 0.0, params["length"])
-
-    # Initialize constant flow field over x if not provided
-    if initial_guess is None:
-        z0 = initialize_flowfield(num_points, params, fluid)
-    else:
-        z0 = initial_guess
 
     # Build the residual vector function
     residual_fn = build_residual_vector(D, x)
@@ -70,13 +64,14 @@ def solve_nozzle_model(
     # Configure the solver and solve the problem
     vars = {"step", "loss", "accepted", "step_size"}
     vset = frozenset(vars) if verbose else frozenset()
-    # solver = opx.GaussNewton(rtol=rtol, atol=atol, verbose=vset)
-    solver = opx.Dogleg(rtol=rtol, atol=atol, verbose=vset)
+    solver = opx.GaussNewton(rtol=rtol, atol=atol, verbose=vset)
+    # solver = opx.Dogleg(rtol=rtol, atol=atol, verbose=vset)
+    # solver = opx.LevenbergMarquardt(rtol=rtol, atol=atol, verbose=vset)
     solution = opx.least_squares(
         residual_fn,
         solver,
         z0,
-        args=(ode_args, inlet_bc),
+        args=(ode_args, boundary_conditions),
         options={"jac": jac_mode},  # "bwd" or "fwd"
         max_steps=max_steps,
     )
@@ -87,88 +82,101 @@ def solve_nozzle_model(
     return out_data, solution
 
 
-
-# ---------- Compute static state from stagnation and Mach number ----------
-def compute_static_state(p0, d0, Ma, fluid):
-    """solve h0 - h(p,s0) - 0.5 a(p,s0)^2 Ma^2 = 0 for p"""
-    st0 = get_props(cpx.DmassP_INPUTS, d0, p0, fluid)
-    s0, h0 = st0["s"], st0["h"]
-
-    def residual(p, _):
-        st = get_props(cpx.PSmass_INPUTS, p, s0, fluid)
-        a, h = st["a"], st["h"]
-        v = a * Ma
-        return h0 - h - 0.5 * v * v
-
-    p_init = 0.9 * p0
-    solver = opx.Newton(rtol=1e-10, atol=1e-10)
-    sol = opx.root_find(residual, solver, y0=p_init, args=None)
-    state = get_props(cpx.PSmass_INPUTS, sol.value, s0, fluid)
-    return state
-
-# ---------- Generate uniform flow field for initial guess ----------
-def initialize_flowfield(num_points, params, fluid):
-    state0_in = get_props(cpx.DmassP_INPUTS, params["p0_in"], params["d0_in"], fluid)
-    v_in = state0_in["a"] * params["Ma_in"]  # Approximation is fine for initial guess
-    h_in = state0_in["h"] - 0.5 * v_in ** 2
-    state_in = get_props(cpx.HmassSmass_INPUTS, h_in, state0_in["s"], fluid)
-    d_in = state_in["rho"]
-    p_in = state_in["p"]
-    flowfield_v    = jnp.full((num_points+1,), v_in)
-    flowfield_ln_d = jnp.full((num_points+1,), jnp.log(jnp.maximum(d_in, 1e-12)))
-    flowfield_ln_p = jnp.full((num_points+1,), jnp.log(jnp.maximum(p_in, 1e-12)))
-    return jnp.concatenate([flowfield_v, flowfield_ln_d, flowfield_ln_p])
-
-
 # ---------- Create function handle for the residual vector ----------
-# ---------- Problem is solved in z = [u, log_rho, log_p] ------------
 def build_residual_vector(Dx, x):
+
+    # We solve for ln(d) and ln(p) instead of d and p directly.
+    #   - This enforces strict positivity of density and pressure without explicit constraints.
+    #   - The PDE in ln(d) or ln(p) form contains a 1/d or 1/p factor in the derivative term:
+    #       d/dx[ln(d)] = (1/d) * d(d)/dx
+    #       d/dx[ln(p)] = (1/p) * d(p)/dx
+    #     so when forming the residuals, the nonlinear terms N_all[:,1] and N_all[:,2] must be divided
+    #     by the current d and p values, respectively.
+    #   - This scaling also normalizes the residual magnitude for variables with very different units
+    #     and prevents density/pressure from dominating the Jacobian purely due to scale.
 
     def residual(z, parameters):
         # Unpack parameters
-        args, inlet_bc = parameters
-        u_in, ln_d_in, ln_p_in = inlet_bc
+        args, boundary_conditions = parameters
+        p0_in, d0_in, Ma_target = boundary_conditions
 
         # Unpack solution vector
         u, ln_d, ln_p = split_z(z, x.shape[0])
         d = jnp.exp(ln_d)
         p = jnp.exp(ln_p)
 
-        # Compute right hand side of the autonomous ODE
+        # Compute right hand side of the ODE
         out = evaluate_ode_rhs(x, z, args)
         N_all = out["N"]
         D_tau = out["D"]
 
-        # Scalar normalization for stability (does not change the solution)
-        sD = jnp.maximum(jnp.median(jnp.abs(D_tau)), 1e-12)
-        Dn = D_tau / sD
-
         # Evaluate residuals at collocation points
-        # Multiply-through PDE residuals (no division by D)
-        R_u = Dn * (Dx @ u)    - N_all[:, 0] / sD
-        R_d = Dn * (Dx @ ln_d) - N_all[:, 1] / (sD * jnp.maximum(d, 1e-12))
-        R_p = Dn * (Dx @ ln_p) - N_all[:, 2] / (sD * jnp.maximum(p, 1e-12))
+        R_u = (Dx @ u) - N_all[:, 0] / D_tau
+        R_d = (Dx @ ln_d) - N_all[:, 1] / D_tau / d
+        R_p = (Dx @ ln_p) - N_all[:, 2] / D_tau / p
 
-        # Evaluate residual at boundary condition
-        R_u = R_u.at[0].set(u[0]    - u_in)
-        R_d = R_d.at[0].set(ln_d[0] - ln_d_in)
-        R_p = R_p.at[0].set(ln_p[0] - ln_p_in)
+        # Evaluate residual at the boundary conditions
+        x_star, Ma_max = find_maximum_mach(x, out["Ma"])
+        R_u = R_u.at[0].set(Ma_target - Ma_max)
+        R_d = R_d.at[0].set(jnp.log(d0_in / out["d0"][0]))
+        R_p = R_p.at[0].set(jnp.log(p0_in / out["p0"][0]))
 
         return jnp.concatenate([R_u, R_d, R_p])
 
     return residual
 
 
-def singularity_margin_from_out(out, alpha=60.0, eps=1e-12):
-    # out["x"]: (N+1,), out["D"]: (N+1,), out["N"]: (N+1,3)
-    D = out["D"]
-    N = out["N"]
-    sD = jnp.maximum(jnp.median(jnp.abs(D)), eps)
-    sN = jnp.maximum(jnp.median(jnp.abs(N)), eps)
-    S = jnp.sqrt((D / sD) ** 2 + jnp.sum((N / sN) ** 2, axis=1))  # (N+1,)
-    w = jax.nn.softmax(-alpha * S)
-    S_c = jnp.sum(w * S)
-    return S_c, S, w
+def find_maximum_mach(x_nodes, y_nodes, newton_steps=50, rtol=1e-10, atol=1e-10):
+    """
+    Locate the single interior maximum of the Chebyshev-Lobatto interpolant.
+
+    Uses a smooth soft-argmax to pick an initial guess (avoids non-diff argmax),
+    then runs a fixed number of Newton iterations on p'(x) = 0.
+
+    Parameters
+    ----------
+    x_nodes : (N+1,) array
+        Chebyshev-Lobatto nodes in the domain.
+    y_nodes : (N+1,) array
+        Function values at the nodes (e.g., Mach number).
+    newton_steps : int, optional
+        Maximum Newton iterations. Default 50.
+    rtol, atol : float, optional
+        Relative and absolute tolerances for Newton.
+
+    Returns
+    -------
+    x_star : float
+        Location of the maximum in [x1, x2].
+    p_star : float
+        Value of the interpolant at x_star.
+    """
+    x1, x2 = x_nodes[0], x_nodes[-1]
+
+    # Smooth initial guess: soft-argmax over node values
+    alpha = 50.0  # higher → sharper, closer to discrete argmax
+    y_shift = y_nodes - jnp.max(y_nodes)
+    w = jax.nn.softmax(alpha * y_shift)
+    x0 = jnp.sum(w * x_nodes)
+
+    # Residual for p'(x) = 0
+    def resid(x, _):
+        _, dp = chebyshev_lobatto_interpolate_and_derivative(x_nodes, y_nodes, x)
+        return dp
+
+    # Newton solve (ignore success flag, fixed iteration count)
+    solver = opx.Newton(rtol=rtol, atol=atol)
+    sol = opx.root_find(resid, solver, y0=x0, args=None, max_steps=newton_steps)
+    x_star = sol.value
+
+    # Clip to domain and guard against NaN fallback
+    x_star = jnp.clip(jnp.nan_to_num(x_star, nan=x0), x1, x2)
+
+    # Value at maximum
+    p_star, _ = chebyshev_lobatto_interpolate_and_derivative(x_nodes, y_nodes, x_star)
+    return x_star, p_star
+
+
 
 # ---------- helpers: pack/unpack and per-node wrapper ----------
 def split_z(z, num_points):
@@ -185,13 +193,77 @@ def evaluate_ode_rhs(x, z, args):
     def per_node(ui, ln_di, ln_pi, xi):
         di = jnp.exp(ln_di)
         pi = jnp.exp(ln_pi)
-        Y = jnp.array([xi, ui, di, pi])
-        return nozzle_single_phase_core(0.0, Y, args)
+        yi = jnp.array([ui, di, pi])
+        return nozzle_single_phase_core(xi, yi, args)
 
     return jax.vmap(per_node, in_axes=(0, 0, 0, 0))(u, ln_d, ln_p, x)
 
 
-# ---------- Define Chebyshev–Lobatto nodes and differentiation matrix ----------
+# ---------- Generate flow field for initial guess ----------
+def initialize_flowfield(num_points, params, fluid, Ma_min=0.1, Ma_max=0.2):
+    """
+    Generate an initial guess for the flowfield using a concave Mach number profile.
+
+    The Mach profile is defined as a symmetric parabola with its maximum (Ma_max)
+    at the domain midpoint and its minimum (Ma_min) at both inlet and outlet.
+    The corresponding velocity, density, and pressure fields are computed
+    from the specified inlet stagnation state.
+
+    Parameters
+    ----------
+    num_points : int
+        Number of interior collocation points. The Chebyshev-Lobatto grid will
+        contain num_points + 1 points in total.
+    params : dict
+        Must contain:
+            p0_in : float
+                Inlet stagnation pressure.
+            d0_in : float
+                Inlet stagnation density.
+    fluid : object
+        Fluid property accessor compatible with get_props().
+    Ma_min : float, optional
+        Minimum Mach number at the inlet and outlet. Default is 0.1.
+    Ma_max : float, optional
+        Maximum Mach number at the domain midpoint. Default is 0.5.
+
+    Returns
+    -------
+    z0 : ndarray, shape (3*(num_points+1),)
+        Initial guess vector at collocation points, concatenated as:
+        [velocity, ln_density, ln_pressure].
+    """
+    # Inlet stagnation state
+    state0_in = get_props(cpx.DmassP_INPUTS, params["p0_in"], params["d0_in"], fluid)
+    a_in = state0_in["a"]  # use inlet speed of sound for initial guess everywhere
+    h_in = state0_in["h"]
+    s_in = state0_in["s"]
+
+    # Create coordinate array from 0 to 1 (Chebyshev–Lobatto nodes not needed for init)
+    x_uniform = jnp.linspace(0.0, 1.0, num_points + 1)
+
+    # Parabolic Mach profile: peak at x=0.5, symmetric, concave
+    # Parabola passing through (0, M_min), (0.5, M_max), (1, M_min)
+    mach_profile = Ma_min + (Ma_max - Ma_min) * (1.0 - 4.0 * (x_uniform - 0.5) ** 2)
+
+    # Velocity from Mach (constant a_in for initial guess)
+    flowfield_v = mach_profile * a_in
+
+    # Static density/pressure from h0 = h + v^2/2, s = s_in
+    h_static = h_in - 0.5 * flowfield_v**2
+    state_static = get_props(cpx.HmassSmass_INPUTS, h_static, s_in, fluid)
+    d_static = jnp.maximum(state_static["rho"], 1e-12)
+    p_static = jnp.maximum(state_static["p"], 1e-12)
+
+    # Log variables
+    flowfield_ln_d = jnp.log(d_static)
+    flowfield_ln_p = jnp.log(p_static)
+
+    # Concatenate into initial guess vector
+    return jnp.concatenate([flowfield_v, flowfield_ln_d, flowfield_ln_p])
+
+
+# ---------- Define Chebyshev-Lobatto nodes and differentiation matrix ----------
 def chebyshev_lobatto_basis(N: int, x1: float, x2: float):
     """
     Return:
@@ -223,125 +295,121 @@ def chebyshev_lobatto_basis(N: int, x1: float, x2: float):
 
     return x, D
 
+
 def chebyshev_lobatto_interpolate(x_nodes, y_nodes, x_eval):
-    # x_nodes: (N+1,), y_nodes: (N+1,), x_eval: (M,)
-    # Compute the Chebyshev-Lobatto weights
+    """
+    Evaluate the Chebyshev-Lobatto barycentric interpolant at one or more points.
+
+    This function is a thin wrapper around `chebyshev_lobatto_interpolate_and_derivative`
+    that discards the derivative and returns only the interpolated value.
+
+    Parameters
+    ----------
+    x_nodes : array_like, shape (N+1,)
+        The Chebyshev-Lobatto nodes in the physical domain [x_min, x_max].
+    y_nodes : array_like, shape (N+1,)
+        Function values at the Chebyshev-Lobatto nodes.
+    x_eval : float or array_like
+        Point(s) in the domain where the interpolant should be evaluated.
+
+    Returns
+    -------
+    p : float or ndarray
+        Interpolated value(s) p(x_eval).
+    """
+    p, _ = chebyshev_lobatto_interpolate_and_derivative(x_nodes, y_nodes, x_eval)
+    return p
+
+
+def chebyshev_lobatto_interpolate_and_derivative(x_nodes, y_nodes, x_eval):
+    """
+    Evaluate the Chebyshev-Lobatto barycentric interpolant and its derivative.
+
+    Parameters
+    ----------
+    x_nodes : array_like, shape (N+1,)
+        The Chebyshev-Lobatto nodes in the physical domain [x_min, x_max].
+    y_nodes : array_like, shape (N+1,)
+        Function values at the Chebyshev-Lobatto nodes.
+    x_eval : float or array_like
+        Point(s) in the domain where the interpolant and its derivative
+        should be evaluated.
+
+    Returns
+    -------
+    p : float or ndarray
+        Interpolated value(s) p(x_eval).
+    dp : float or ndarray
+        First derivative p'(x_eval) with respect to x.
+
+    Notes
+    -----
+    - Uses the barycentric interpolation formula, which is numerically stable
+      even for high-degree polynomials.
+    - Correctly handles the case where x_eval coincides with one of the nodes,
+      returning the exact nodal value and the exact derivative at that node.
+    - Works for scalar or vector x_eval.
+    """
     n = x_nodes.size - 1
     k = jnp.arange(n + 1)
     w = jnp.where((k == 0) | (k == n), 0.5, 1.0) * ((-1.0) ** k)
 
-    # Broadcasted diffs: (N+1, M)
-    diff = x_eval[None, :] - x_nodes[:, None]
+    def _scalar_interp_and_deriv(x):
+        diff = x - x_nodes
+        is_node = diff == 0.0
 
-    # Handle exact node hits to avoid division by zero
-    is_node = diff == 0.0  # (N+1, M)
-    any_node = jnp.any(is_node, axis=0)  # (M,)
+        def at_node():
+            # Build terms excluding idx manually
+            idx = jnp.argmax(is_node).astype(int)
+            p = y_nodes[idx]
 
-    # Barycentric formula
-    num = jnp.sum((w * y_nodes)[:, None] / diff, axis=0)
-    den = jnp.sum((w)[:, None] / diff, axis=0)
-    interp = num / den
+            # diff and weights excluding idx
+            diff_ex = x_nodes[idx] - x_nodes
+            ydiff_ex = y_nodes[idx] - y_nodes
 
-    # Replace columns where x_eval coincides with a node
-    # take the corresponding y_node for that column
-    y_at_node = jnp.sum(jnp.where(is_node, y_nodes[:, None], 0.0), axis=0)
-    return jnp.where(any_node, y_at_node, interp)
+            # Set excluded self-term to 0 safely
+            diff_ex = diff_ex.at[idx].set(1.0)  # avoid division by 0
+            ydiff_ex = ydiff_ex.at[idx].set(0.0)
+            w_ex = w.at[idx].set(0.0)
 
+            dp = jnp.sum((w_ex / w[idx]) * (ydiff_ex) / (diff_ex))
+            return p, dp
 
-@eqx.filter_jit
-def maximum_from_poly_nodes(x_nodes, y_nodes):
-    """
-    Find the location and value of the maximum of the degree-N polynomial interpolant
-    through (x_nodes, y_nodes) on the closed interval [x1, x2].
+        def generic():
+            r = w / diff
+            S = jnp.sum(r)
+            N = jnp.sum(r * y_nodes)
+            p = N / S
+            rp = -w / (diff * diff)
+            S1 = jnp.sum(rp)
+            N1 = jnp.sum(rp * y_nodes)
+            dp = (N1 - p * S1) / S
+            return p, dp
 
-    We:
-      1) Map physical nodes x ∈ [x1, x2] to the canonical variable t ∈ [-1, 1].
-      2) Build a Vandermonde matrix in powers of t and solve for monomial coefficients.
-      3) Differentiate the polynomial (in descending-order coefficients).
-      4) Compute all roots of the derivative with fixed output size (strip_zeros=False).
-      5) Form a fixed-size candidate set = {endpoints} ∪ {all derivative roots},
-         mask invalid candidates (complex or outside [-1, 1]), and select the argmax.
-      6) Map the maximizing t back to x.
+        return jax.lax.cond(jnp.any(is_node), at_node, generic)
 
-    Notes:
-      - JIT-Friendly: All arrays have static shapes; we avoid data-dependent control flow.
-      - roots(..., strip_zeros=False): Prevents data-dependent trimming of leading zeros,
-        which would otherwise trigger a ConcretizationTypeError under JIT.
-      - Numerical Considerations: A Vandermonde solve is fine for moderate N (e.g., ≤ 40)
-        on Chebyshev/Lobatto-like nodes. For very large N, a Chebyshev-based routine
-        (colleague matrix) is more stable.
-
-    Args:
-        x_nodes: (N+1,) coordinates of interpolation nodes in ascending order (x1, ..., x2).
-        y_nodes: (N+1,) function values at those nodes.
-
-    Returns:
-        x_star: Argmax location in physical coordinates [x1, x2].
-        y_star: Maximum value of the polynomial interpolant on [x1, x2].
-    """
-
-    # Function generated with chatGPT (not tested under all scenarios!!!)
-
-    # Map x -> t in [-1, 1] using the affine change of variables.
-    x1, x2 = x_nodes[0], x_nodes[-1]
-    t_nodes = (2.0 * (x_nodes - x1) / (x2 - x1)) - 1.0
-
-    # Keep N Static Under JIT (shape-derived, so compilation is stable if N is fixed).
-    N = x_nodes.shape[0] - 1
-
-    # Build Vandermonde Matrix In Ascending Powers: V[i, j] = t_i^j for j = 0..N.
-    powers = jnp.arange(N + 1)
-    V = t_nodes[:, None] ** powers[None, :]
-
-    # Solve For Monomial Coefficients In Ascending Order: y ≈ sum_j c_asc[j] * t^j.
-    c_asc = jnp.linalg.solve(V, y_nodes)
-
-    # Convert To Descending Order For jnp.poly* APIs (polyder/roots/polyval expect this).
-    c_desc = c_asc[::-1]
-
-    # Differentiate Polynomial (Descending Coefficients → Descending Coefficients).
-    dc_desc = jnp.polyder(c_desc)
-
-    # Compute Roots With Fixed Output Size: Avoid Data-Dependent Zero-Stripping Under JIT.
-    roots_c = jnp.roots(dc_desc, strip_zeros=False)  # Complex array of shape (N-1,)
-
-    # Extract Real Parts And Build A Validity Mask For Real Roots In [-1, 1].
-    roots_t = roots_c.real
-    roots_ok = jnp.isclose(roots_c.imag, 0.0, atol=1e-12)
-    roots_ok = roots_ok & (roots_t >= -1.0) & (roots_t <= 1.0)
-
-    # Build Candidate Set With Fixed Length: Endpoints Are Always Valid.
-    t_cand = jnp.concatenate([jnp.array([-1.0, 1.0], dtype=roots_t.dtype), roots_t])
-    mask = jnp.concatenate([jnp.array([True, True]), roots_ok])
-
-    # Evaluate Polynomial At All Candidates; Invalidate Non-Real/Out-Of-Range With -inf.
-    y_cand_all = jnp.polyval(c_desc, t_cand)
-    y_cand = jnp.where(mask, y_cand_all, -jnp.inf)
-
-    # Select Argmax In Canonical Variable And Recover The True Value (Unmasked).
-    idx = jnp.argmax(y_cand)
-    t_star = t_cand[idx]
-    y_star = y_cand_all[idx]
-
-    # Map Back To Physical Coordinate: x = 0.5*(t+1)*(x2-x1) + x1.
-    x_star = 0.5 * (t_star + 1.0) * (x2 - x1) + x1
-    return x_star, y_star
+    if jnp.ndim(x_eval) == 0:
+        return _scalar_interp_and_deriv(x_eval)
+    else:
+        return jax.vmap(_scalar_interp_and_deriv)(x_eval)
 
 
 # ---------- example ----------
 if __name__ == "__main__":
+
+    solve_nozzle_model_collocation = eqx.filter_jit(solve_nozzle_model_collocation)
 
     # Define model parameters
     backend = "perfect_gas"
     # backend = "jaxprop"
     fluid_name = "air"
 
-    params = tree_map(
+    params = jax.tree_util.tree_map(
         jnp.asarray,
         {
-            "Ma_in": 0.10,       # Pa
+            "Ma_target": 0.5,    # -
             "p0_in": 1.0e5,      # Pa
-            "d0_in": 1.20,       # K
+            "d0_in": 1.20,       # kg/m3
             "D_in": 0.050,       # m
             "length": 5.00,      # m
             "roughness": 10e-6,  # m
@@ -350,7 +418,7 @@ if __name__ == "__main__":
     )
 
     # Numerical settings
-    num_points = 35
+    num_points = 50
     tolerance = 1e-8
     max_steps = 500
     jac_mode = "bwd"
@@ -359,6 +427,7 @@ if __name__ == "__main__":
     # Define working fluid depending on backend selected
     if backend == "perfect_gas":
         from coolpropx.perfect_gas import get_props, get_perfect_gas_constants
+
         fluid = get_perfect_gas_constants(fluid_name, T_ref=300, P_ref=101325)
 
     elif backend == "jaxprop":
@@ -368,53 +437,54 @@ if __name__ == "__main__":
 
     else:
         raise ValueError("Invalid fluid backend seclection")
-    
 
     # Inlet Mach number sensitivity analysis
     print("\n" + "-" * 60)
     print("Running pressure ratio sweep (collocation)")
     print("-" * 60)
-    Ma_array = jnp.asarray(jnp.linspace(0.05, 0.20, 11))
+    # Ma_array = jnp.asarray(jnp.linspace(0.5, 0.7, 3))
+    Ma_array = jnp.asarray([0.5, 0.9, 0.99, 0.999])
     colors = plt.cm.magma(jnp.linspace(0.2, 0.8, len(Ma_array)))
     z0 = initialize_flowfield(num_points, params, fluid)
     results = []
     for Ma, color in zip(Ma_array, colors):
         t0 = perf_counter()
-        params_current = tree_map(jnp.asarray,{**params, "Ma_in": Ma})
-        out, sol = solve_nozzle_model(
-            params_current,
+        params = jax.tree_util.tree_map(jnp.asarray, {**params, "Ma_target": Ma})
+        out, sol = solve_nozzle_model_collocation(
+            z0,
+            params,
             fluid,
             wall_friction=False,
             heat_transfer=False,
-            # initial_guess=z0,
             num_points=num_points,
             max_steps=max_steps,
             jac_mode=jac_mode,
             verbose=verbose,
             rtol=tolerance,
-            atol=tolerance,            
+            atol=tolerance,
         )
-        z0 = sol.value
-        dt_ms = (perf_counter() - t0) * 1e3
+
+        # Substitute values, keep same array
+        z0 = z0.at[:].set(sol.value)
 
         # Relative error diagnostics
-        mdot_error = (out["m_dot"].max() - out["m_dot"].min()) / out["m_dot"][0] 
+        dt_ms = (perf_counter() - t0) * 1e3
+        mdot_error = (out["m_dot"].max() - out["m_dot"].min()) / out["m_dot"][0]
         h0_error = (out["h0"].max() - out["h0"].min()) / out["h0"][0]
         s_error = (out["s"].max() - out["s"].min()) / out["s"][0]
 
         print(
-            f"p_in/p0 = {Ma:0.4f} | LM status {sol.result._value:2d} | "
+            f"Ma_target = {Ma:0.4f} | Ma_crit = {out['Ma'][0]:0.5f} | Solver status {sol.result._value:2d} | "
             f"steps {int(sol.stats['num_steps']):3d} | "
             f"mdot error {mdot_error:0.2e} | h0 error {h0_error:0.2e} | "
             f"s_error {s_error:0.2e} | time {dt_ms:7.2f} ms"
         )
 
-        results.append({"PR": Ma, "color": color, "out": out, "sol": sol})
-
+        results.append({"Ma": Ma, "color": color, "out": out, "sol": sol})
 
     # --- Plot the solutions ---
     fig, axs = plt.subplots(4, 1, figsize=(5, 9), sharex=True)
-    x_dense = jnp.linspace(0.0, params["length"], 500)
+    x_dense = jnp.linspace(0.0, params["length"], 1000)
 
     # Pressure (bar)
     axs[0].set_ylabel("Pressure (bar)")
@@ -424,7 +494,15 @@ if __name__ == "__main__":
         p_nodes = out["p"] * 1e-5
         p_dense = chebyshev_lobatto_interpolate(x_nodes, p_nodes, x_dense)
         axs[0].plot(x_dense, p_dense, color=r["color"])
-        axs[0].plot(x_nodes, p_nodes, "o", color=r["color"], markersize=3)
+        axs[0].plot(
+            x_nodes,
+            p_nodes,
+            "o",
+            color=r["color"],
+            markersize=3,
+            label=f"$Ma^*={r["Ma"]}$",
+        )
+    axs[0].legend(loc="lower right", fontsize=8)
 
     # Mach number
     axs[1].set_ylabel("Mach number (-)")
@@ -464,7 +542,6 @@ if __name__ == "__main__":
     #     out = r["out"]
     #     axs[3].plot(out["x"], out["s_metric"], color=r["color"])
     # axs[3].set_xlabel("x (m)")
-
 
     fig.tight_layout(pad=1)
     plt.show()

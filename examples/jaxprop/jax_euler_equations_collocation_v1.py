@@ -16,7 +16,7 @@ cpx.set_plot_options()
 from diffrax_nozzle_single_phase_v3 import nozzle_single_phase_core
 
 
-# This code works like a charm.
+# v1 This code works like a charm.
 # It uses the collocation method calling the nozzle_single_phase right hand side
 # The problem is solved in [u, ln(p), ln(d)] to improve stability
 # The solution is, of course, a bit sensitive to the initial guess provided

@@ -65,7 +65,7 @@ def nozzle_single_phase(
     adjoint = cpx.jax_import.make_diffrax_adjoint(adjoint_name)
     term = dfx.ODETerm(eval_ode_rhs)
     ctrl = dfx.PIDController(rtol=rtol, atol=atol)
-    ts = jnp.linspace(0.0, length, number_of_points)
+    ts = jnp.linspace(length/2, length, number_of_points)
     saveat = dfx.SaveAt(ts=ts, t1=True, dense=False, fn=eval_ode_full)
 
     # Define event for the singular point
@@ -79,7 +79,7 @@ def nozzle_single_phase(
     sol = dfx.diffeqsolve(
         term,
         solver,
-        t0=0.0,
+        t0=length/2,
         t1=length,
         dt0=None,
         y0=y0,
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     params = {
         "p0_in": 1.0e5,        # Pa
         "T0_in": 300.0,        # K
-        "Ma_in": 0.20,         # -
+        "Ma_in": 1.01,         # -
         "D_in": 0.050,         # m
         "length": 5.00,        # m
         "roughness": 10e-6,    # m
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     print("\n" + "-" * 60)
     print("Running inlet Mach number sensitivity analysis")
     print("-" * 60)
-    input_array = jnp.asarray([0.05, 0.10, 0.15, 0.20, 0.25, 0.35])
+    input_array = jnp.asarray([1.01])
     colors = plt.cm.magma(jnp.linspace(0.2, 0.8, len(input_array)))  # Generate colors
     solution_list = []
     for i, Ma in enumerate(input_array):
@@ -176,10 +176,11 @@ if __name__ == "__main__":
     gs = gridspec.GridSpec(3, 1, height_ratios=[3, 3, 1])
     xg = solution_list[0].ys["x"]
     rg = solution_list[0].ys["diameter"] / 2.0
-    ax0 = fig.add_subplot(gs[0])
-    ax1 = fig.add_subplot(gs[1], sharex=ax0)
-    ax2 = fig.add_subplot(gs[2], sharex=ax0)
-    axs = [ax0, ax1, ax2]
+    axs = [
+        fig.add_subplot(gs[0]),
+        fig.add_subplot(gs[1], sharex=None),  # temporarily no sharex
+        fig.add_subplot(gs[2], sharex=None)
+    ]
 
     # --- row 1: pressure (bar): solid p0, dashed p ---
     axs[0].set_ylabel("Pressure (bar)")
