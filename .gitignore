@@ -70,3 +70,6 @@ venv/
 **/results*/
 
 **/assignments/
+
+**/fluid_tables/
+**/verification_figures/

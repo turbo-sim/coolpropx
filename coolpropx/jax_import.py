@@ -4,12 +4,14 @@ try:
     os.environ["JAX_PLATFORM_NAME"] = "cpu"
     import jax
     import jax.numpy as jnp
+    from jax import jit
     jax.config.update("jax_enable_x64", True)
     JAX_AVAILABLE = True
 except ImportError:
     import numpy as np
     jnp = np
-    lax = None
+    jax = None
+    jit = None
     JAX_AVAILABLE = False
 
 import logging

@@ -8,7 +8,11 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "coolpropx"
 copyright = "2025, Roberto Agromayor"
 author = ""
+<<<<<<< HEAD
 release = "v0.2.14"
+=======
+release = "v0.2.20"
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 
 # Define extensions
 extensions = [

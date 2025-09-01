@@ -11,7 +11,7 @@ p = 101325.0  # Pa
 try:
     constants = pg.GAS_CONSTANTS_AIR
 except AttributeError:
-    constants = pg.get_perfect_gas_constants("air", 298.15, 101325.0, display=False)
+    constants = pg.get_constants("air", 298.15, 101325.0, display=False)
 
 # base state
 base = pg.get_props(input_pair, h, p, constants)

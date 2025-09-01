@@ -20,7 +20,7 @@ cpx.set_plot_options()
 
 # --------------------------- get constants -------------------------- #
 
-constants = pg.get_perfect_gas_constants("air", 298.15, 101_325.0, display=False)
+constants = pg.get_constants("air", 298.15, 101_325.0, display=False)
 print(f"\nPerfect-gas constants:")
 cpx.print_dict(constants)
 

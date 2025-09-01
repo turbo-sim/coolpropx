@@ -9,7 +9,11 @@ tests_list = [
     "test_helmholtz_eos.py",
     "test_spinodal_calculation.py",
     "test_phase_diagrams.py",
+<<<<<<< HEAD
     "test_perfect_gas_eos.py",
+=======
+    # "test_perfect_gas_eos.py",
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 ]
 
 # Run pytest when this python script is executed

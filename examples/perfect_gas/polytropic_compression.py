@@ -28,7 +28,7 @@ T_in = 300.0
 eta_p = 90
 
 # Pull gamma from your perfect-gas constants at the inlet state
-const = pg.get_perfect_gas_constants(fluid, T_in, p_in, display=False)
+const = pg.get_constants(fluid, T_in, p_in, display=False)
 gamma = float(const["gamma"])
 
 # Base point (match function order!)

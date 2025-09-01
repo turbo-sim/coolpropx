@@ -2,11 +2,21 @@
 # import os
 # import psutil
 import time
+<<<<<<< HEAD
 import jax
 import jax.numpy as jnp
 from jax import jit
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
+=======
+# import jax
+# import jax.numpy as jnp
+# from jax import jit
+
+from ..jax_import import jax, jnp, jit
+# from jax.experimental import mesh_utils
+# from jax.sharding import Mesh, PartitionSpec, NamedSharding
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 import CoolProp.CoolProp as cp
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,7 +32,11 @@ float64 = jnp.dtype("float64")
 complex128 = jnp.dtype("complex128")
 
 # =================== Functions to Export ===================
+<<<<<<< HEAD
 @jax.jit
+=======
+# @jax.jit
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 def compute_bicubic_coefficients_of_ij(i, j, f, fx, fy, fxy):
     #xx=f(0,0)&f(1,0)&f(0,1)&f(1,1)&f_x(0,0)&f_x(1,0)&f_x(0,1)&f_x(1,1)&f_y(0,0)&f_y(1,0)&f_y(0,1)&f_y(1,1)&f_{xy}(0,0)&f_{xy}(1,0)&f_{xy}(0,1)&f_{xy}(1,1)
     xx=[f[i,j],f[i+1,j],f[i,j+1],f[i+1,j+1],fx[i,j],fx[i+1,j],fx[i,j+1],fx[i+1,j+1],fy[i,j],fy[i+1,j],fy[i,j+1],fy[i+1,j+1],fxy[i,j],fxy[i+1,j],fxy[i,j+1],fxy[i+1,j+1]]
@@ -132,7 +146,11 @@ def compute_bicubic_coefficients_of_ij(i, j, f, fx, fy, fxy):
 
 #     return result
 
+<<<<<<< HEAD
 @partial(jit, static_argnums=(5, 6))
+=======
+# @partial(jit, static_argnums=(5, 6))
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 def bicubic_interpolant(h, P, h_vals, P_vals, coeffs, Nh, Np, hmin, hmax, Lmin, Lmax):
     """
     Evaluate the bicubic interpolant at (h, P) using precomputed coefficients.
@@ -167,7 +185,11 @@ def bicubic_interpolant(h, P, h_vals, P_vals, coeffs, Nh, Np, hmin, hmax, Lmin, 
 
 
 
+<<<<<<< HEAD
 @jax.jit
+=======
+# @jax.jit
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 def inverse_interpolant_scalar_hD(h, D):
     #Find the real(float) index
     ii=((h-hmin)/(hmax-hmin)*(N-1))
@@ -236,7 +258,11 @@ def inverse_interpolant_scalar_hD(h, D):
     P=jnp.exp(L)
     return P
 
+<<<<<<< HEAD
 @jax.jit
+=======
+# @jax.jit
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 def inverse_interpolant_scalar_DP(D, P):
     # Convert pressure to log space
     L = jnp.log(P)

@@ -14,19 +14,19 @@ hmax = 600e3     # J/kg
 Pmin = 2e6       # Pa
 Pmax = 20e6      # Pa
 Np = 20          # Grid size for quick test
-Nh = 15
+Nh = 16
 
 # ---------------------------
 # Run table generation
 # ---------------------------
-cpx.bicubic.generate_property_table(hmin, hmax, Pmin, Pmax, fluid, Nh=Np, Np=Np, outdir=outdir)
+cpx.bicubic.generate_property_table(hmin, hmax, Pmin, Pmax, fluid, Nh=Nh, Np=Np, outdir=outdir)
 
 
 # ---------------------------
 # Load and preview output
 # ---------------------------
 
-pkl_file = os.path.join(outdir, f"{fluid}_{Np}_x_{Np}.pkl")
+pkl_file = os.path.join(outdir, f"{fluid}_{Nh}_x_{Np}.pkl")
 
 print("\n Verifying saved table structure...\n")
 

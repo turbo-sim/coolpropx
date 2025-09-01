@@ -1,6 +1,10 @@
 [tool.poetry]
 name = "coolpropx"
+<<<<<<< HEAD
 version = "0.2.14"
+=======
+version = "0.2.20"
+>>>>>>> 71030d1e03348d1018fc6856af7b1a046a4a12e2
 description = "A lightweight wrapper to CoolProp's low-level interface."
 authors = ["Roberto Agromayor"]
 license = "MIT"
@@ -24,6 +28,11 @@ jaxlib = { version = "^0.5.3", optional = true }
 # install with: poetry install --extras jax
 # or: pip install coolpropx[jax]
 jax = ["jax", "jaxlib"]
+
+[tool.poetry.extras]
+# install with: poetry install --extras jax
+# or: pip install coolpropx[jax]
+jax = ["jax", "jaxlib", "diffrax", "equinox", "optimistix"]
 
 [tool.poetry.group.dev.dependencies]
 ipython = ">=8.13,<8.17"

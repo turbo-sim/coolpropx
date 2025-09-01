@@ -1,5 +1,7 @@
 import numpy as np
-import jax.numpy as jnp
+
+from ..jax_import import jnp
+# import jax.numpy as jnp
 import CoolProp.CoolProp as cp
 # import turboflow as tf
 import os

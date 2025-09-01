@@ -1,6 +1,4 @@
-# import os
-# os.environ["JAX_DISABLE_JIT"] = "1"
-
+import time
 import jax
 import jax.numpy as jnp
 import diffrax as dfx
@@ -9,12 +7,22 @@ import optimistix as optx
 import coolpropx as cpx
 import matplotlib.pyplot as plt
 
-from time import perf_counter
 from matplotlib import gridspec
 
 cpx.set_plot_options(grid=False)
 
-from examples.jaxprop.nozzle_model_core import nozzle_single_phase_core
+from coolpropx.perfect_gas import get_props
+from examples.jaxprop.nozzle_model_core import (
+    nozzle_single_phase_core,
+    symmetric_nozzle_geometry,
+)
+
+from examples.jaxprop.nozzle_model_solver import (
+    NozzleParams,
+    IVPSettings,
+    replace_param,
+    compute_static_state,
+)
 
 # v1 solves the ode system using the space marching in non-autonomous form
 
@@ -24,55 +32,36 @@ from examples.jaxprop.nozzle_model_core import nozzle_single_phase_core
 # -----------------------------------------------------------------------------
 @eqx.filter_jit
 def nozzle_single_phase(
-    params,
-    fluid,
-    wall_friction: bool = False,
-    heat_transfer: bool = False,
-    solver_name: str = "Dopri5",
-    adjoint_name: str = "DirectAdjoint",
-    number_of_points: int = 50,
-    rtol: float = 1e-6,
-    atol: float = 1e-6,
+    params_model,
+    params_solver,
 ):
     """
     1D variable-area nozzle with friction and optional heat transfer (Reynolds analogy).
     State vector: y = [v, rho, p].
     """
-    # Rename parameters
-    p0_in = params["p0_in"]
-    T0_in = params["T0_in"]
-    Ma_in = params["Ma_in"]
-    length = params["length"]
-    eps_wall = params["roughness"]
-    T_wall = params["T_wall"]
 
     # Compute inlet conditions iteratively
-    p_in, s0 = compute_inlet_static_state(p0_in, T0_in, Ma_in, fluid)
-    state_in = get_props(cpx.PSmass_INPUTS, p_in, s0, fluid)
-    rho_in, a_in = state_in["rho"], state_in["a"]
-    v_in = Ma_in * a_in
+    state_in = compute_static_state(
+        params_model.p0_in,
+        params_model.d0_in,
+        params_model.Ma_in,
+        params_model.fluid,
+    )
+    p_in, rho_in, a_in = state_in["p"], state_in["rho"], state_in["a"]
+    v_in = params_model.Ma_in * a_in
     y0 = jnp.array([v_in, rho_in, p_in])
 
-    # Group the ODE system constant parameters
-    args = (length, eps_wall, T_wall, wall_friction, heat_transfer, fluid)
-
-    # Define functions to evaluate the ODE
-    eval_ode_full = nozzle_single_phase_core
-    eval_ode_rhs = lambda t, y, args: eval_ode_full(t, y, args)["rhs"]
-
     # Create and configure the solver
-    solver = cpx.jax_import.make_diffrax_solver(solver_name)
-    adjoint = cpx.jax_import.make_diffrax_adjoint(adjoint_name)
+    solver = cpx.jax_import.make_diffrax_solver(params_solver.solver_name)
+    adjoint = cpx.jax_import.make_diffrax_adjoint(params_solver.adjoint_name)
     term = dfx.ODETerm(eval_ode_rhs)
-    ctrl = dfx.PIDController(rtol=rtol, atol=atol)
-    ts = jnp.linspace(0.0, length, number_of_points)
+    ctrl = dfx.PIDController(rtol=params_solver.rtol, atol=params_solver.atol)
+    ts = jnp.linspace(0.0, params_model.length, params_solver.number_of_points)
     saveat = dfx.SaveAt(ts=ts, t1=True, dense=False, fn=eval_ode_full)
 
-    # Define event for the singular point
-    root_finder = optx.Bisection(rtol=1e-10, atol=1e-10)
     event = dfx.Event(
         cond_fn=_sonic_event_cond,
-        root_finder=root_finder,
+        root_finder=optx.Bisection(rtol=1e-10, atol=1e-10),
     )
 
     # Solve the ODE system
@@ -80,12 +69,12 @@ def nozzle_single_phase(
         term,
         solver,
         t0=0.0,
-        t1=length,
+        t1=params_model.length,
         dt0=None,
         y0=y0,
+        args=params_model,
         saveat=saveat,
         stepsize_controller=ctrl,
-        args=args,
         adjoint=adjoint,
         event=event,
         max_steps=20_000,
@@ -94,69 +83,49 @@ def nozzle_single_phase(
     return sol
 
 
-# -----------------------------------------------------------------------------
-# inlet static state from stagnation and Mach
-# -----------------------------------------------------------------------------
-def compute_inlet_static_state(p0, T0, Ma, fluid):
-    """solve h0 - h(p,s0) - 0.5 a(p,s0)^2 Ma^2 = 0 for p"""
-    st0 = get_props(cpx.PT_INPUTS, p0, T0, fluid)
-    s0, h0 = st0["s"], st0["h"]
+# Define ODE RHS functions
+def eval_ode_full(t, y, _):
+    return nozzle_single_phase_core(t, y, args)
 
-    def residual(p, _):
-        st = get_props(cpx.PSmass_INPUTS, p, s0, fluid)
-        a, h = st["a"], st["h"]
-        v = a * Ma
-        return h0 - h - 0.5 * v * v
 
-    p_init = 0.9 * p0
-    solver = optx.Newton(rtol=1e-10, atol=1e-10)
-    sol = optx.root_find(residual, solver, y0=p_init, args=None)
-    return sol.value, s0
+def eval_ode_rhs(t, y, _):
+    return nozzle_single_phase_core(t, y, args)["rhs"]
+
 
 # Event: stop when Ma^2 - 1 < tol
 def _sonic_event_cond(t, y, args, **kwargs):
     v, rho, p = y
-    fluid = args[-1]
-    a = get_props(cpx.DmassP_INPUTS, rho, p, fluid)["a"]
+    a = get_props(cpx.DmassP_INPUTS, rho, p, args.fluid)["a"]
     Ma_sqr = (v / a) ** 2
-    tolerance = 1e-5
-    return Ma_sqr - (1.0 - tolerance)
+    margin = 1e-5
+    return Ma_sqr - (1.0 - margin)
 
 
 # -----------------------------------------------------------------------------
 # Converging-diverging nozzle example
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    
+
     # Define model parameters
-    backend = "perfect_gas"
-    # backend = "jaxprop"
     fluid_name = "air"
-    params = {
-        "p0_in": 1.0e5,        # Pa
-        "T0_in": 300.0,        # K
-        "Ma_in": 0.20,         # -
-        "D_in": 0.050,         # m
-        "length": 5.00,        # m
-        "roughness": 10e-6,    # m
-        "T_wall": 300.0,       # K
-    }
-    
-    # Convert to JAX array types
-    params = {k: jnp.asarray(v) for k, v in params.items()}
+    fluid = cpx.perfect_gas.get_constants(fluid_name, T_ref=300, P_ref=101325)
 
-    # Define working fluid depending on backend selected
-    if backend == "perfect_gas":
-        from coolpropx.perfect_gas import get_props, get_perfect_gas_constants
-        fluid = get_perfect_gas_constants(fluid_name, params["T0_in"], params["p0_in"])
+    args = NozzleParams(
+        Ma_in=0.25,
+        p0_in=1.0e5,  # Pa
+        d0_in=1.20,  # kg/m³
+        D_in=0.050,  # m
+        length=5.00,  # m
+        roughness=1e-6,  # m
+        T_wall=300.0,  # K
+        heat_transfer=0.0,
+        wall_friction=0.0,
+        fluid=fluid,
+        geometry=symmetric_nozzle_geometry,
+    )
 
-    elif backend == "jaxprop":
-        from coolpropx.jaxprop import get_props
-        fluid = cpx.Fluid(name=fluid_name, backend="HEOS")
+    params_solver = IVPSettings(solver_name="Dopri5", rtol=1e-8, atol=1e-8)
 
-    else:
-        raise ValueError("Invalid fluid backend seclection")
-    
     # Inlet Mach number sensitivity analysis
     print("\n" + "-" * 60)
     print("Running inlet Mach number sensitivity analysis")
@@ -165,10 +134,12 @@ if __name__ == "__main__":
     colors = plt.cm.magma(jnp.linspace(0.2, 0.8, len(input_array)))  # Generate colors
     solution_list = []
     for i, Ma in enumerate(input_array):
-        t0 = perf_counter()
-        params["Ma_in"] = Ma
-        sol = nozzle_single_phase(params, fluid, number_of_points=100)#, solver_name="Kvaerno5")
-        print(f"Ma_in = {Ma:0.2f} | Solution time: {(perf_counter() - t0) * 1e3:7.3f} ms")
+        t0 = time.perf_counter()
+        args = replace_param(args, "Ma_in", Ma)
+        sol = nozzle_single_phase(args, params_solver)
+        print(
+            f"Ma_in = {Ma:0.2f} | Solution time: {(time.perf_counter() - t0) * 1e3:7.3f} ms"
+        )
         solution_list.append(sol)
 
     # Create the figure
@@ -185,8 +156,14 @@ if __name__ == "__main__":
     axs[0].set_ylabel("Pressure (bar)")
     for color, val, sol in zip(colors, input_array, solution_list):
         x = sol.ys["x"]
-        axs[0].plot(x, sol.ys["p0"] * 1e-5, linestyle="--",  color=color)
-        axs[0].plot(x, sol.ys["p"]  * 1e-5, linestyle="-", color=color, label=rf"$\text{{Ma}}_\mathrm{{in}} = {val:0.3f}$")
+        axs[0].plot(x, sol.ys["p0"] * 1e-5, linestyle="--", color=color)
+        axs[0].plot(
+            x,
+            sol.ys["p"] * 1e-5,
+            linestyle="-",
+            color=color,
+            label=rf"$\text{{Ma}}_\mathrm{{in}} = {val:0.3f}$",
+        )
     axs[0].legend(loc="lower right", fontsize=7)
 
     # --- row 2: Mach number ---

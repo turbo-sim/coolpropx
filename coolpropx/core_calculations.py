@@ -103,9 +103,10 @@ def compute_properties_1phase(
         props["quality_mass"] = props["Q"]
         props["quality_volume"] = np.nan
     else:
-        props["Q"] = AS.Q()
-        props["quality_mass"] = props["Q"]
-        props["quality_volume"] = props["Q"]
+        frac_mass, frac_vol = calculate_trimmed_quality(AS)
+        props["Q"] = frac_mass
+        props["quality_mass"] = frac_mass
+        props["quality_volume"] = frac_vol
 
     # Calculate departure from saturation properties
     if supersaturation:
@@ -483,12 +484,18 @@ def compute_properties_metastable_rhoT(
     if generalize_quality:
         props["Q"] = calculate_generalized_quality(AS)
         props["quality_mass"] = props["Q"]
-        props["quality_volume"] = 1.00 if props["Q"] >= 1 else 0.00
-    else:
-        props["Q"] = np.nan
-        props["quality_mass"] = np.nan
         props["quality_volume"] = np.nan
-
+    else:
+        fluids = AS.fluid_names()  # AS.name does not work well for REFPROP backend
+        cloned_AS = CP.AbstractState(AS.backend_name(), fluids[0])
+        rho_crit, T_crit = AS.rhomass_critical(), AS.T_critical()
+        cloned_AS.update(CP.DmassT_INPUTS, rho_crit, T_crit)
+        s_crit = cloned_AS.smass()
+        frac_mass = 1.0 if abstract_state.smass() > s_crit else 0.0
+        frac_vol = frac_mass
+        props["Q"] = frac_mass
+        props["quality_mass"] = frac_mass
+        props["quality_volume"] = frac_vol
 
     # Add properties as aliases
     for key, value in PROPERTY_ALIAS.items():
@@ -1192,6 +1199,46 @@ def calculate_generalized_quality(abstract_state, alpha=10):
     quality = math.smooth_maximum(quality, -1, method="logsumexp", alpha=alpha)
 
     return quality.item()
+
+
+def calculate_trimmed_quality(abstract_state):
+
+    # Instantiate new abstract state to compute saturation properties without changing the state of the class
+    AS = abstract_state
+    fluids = AS.fluid_names()  # AS.name does not work well for REFPROP backend
+    if len(fluids) != 1:
+        raise ValueError(f"Expected one fluid, got {fluids}")
+    cloned_AS = CP.AbstractState(AS.backend_name(), fluids[0])
+
+    # Retrieve single-phase properties
+    is_two_phase = abstract_state.phase() == CP.iphase_twophase
+    if not is_two_phase:
+
+        # Determine quality based on actual vs critical entropy
+        rho_crit, T_crit = AS.rhomass_critical(), AS.T_critical()
+        cloned_AS.update(CP.DmassT_INPUTS, rho_crit, T_crit)
+        s_crit = cloned_AS.smass()
+        frac_mass = 1.0 if abstract_state.smass() > s_crit else 0.0
+        frac_vol = frac_mass
+
+    else:
+
+        # Saturated liquid density
+        cloned_AS.update(CP.QT_INPUTS, 0.00, AS.T())
+        rho_L = cloned_AS.rhomass()
+
+        # Saturated vapor density
+        cloned_AS.update(CP.QT_INPUTS, 1.00, AS.T())
+        rho_V = cloned_AS.rhomass()
+
+        # Mass and volume fractions of gas
+        rho_mix = AS.rhomass()
+        frac_mass = (rho_mix - rho_L) / (rho_V - rho_L)
+        frac_vol = (1 / rho_mix - 1 / rho_L) / (1 / rho_V - 1 / rho_L)
+
+
+    return frac_mass, frac_vol
+
 
 
 

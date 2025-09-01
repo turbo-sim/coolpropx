@@ -6,7 +6,7 @@ from functools import partial
 # ----------------------------------------------------------------------------- #
 # Constant generation and Sutherland estimation
 # ----------------------------------------------------------------------------- #
-def get_perfect_gas_constants(fluid_name, T_ref, P_ref, dT=100.0, display=False):
+def get_constants(fluid_name, T_ref, P_ref, dT=100.0, display=False):
     """
     Compute perfect gas constants from a real-fluid model at a reference state,
     and estimate Sutherland constants using offset temperatures.
@@ -289,13 +289,23 @@ def assemble_properties(T, P, rho, h, s, constants):
 # State evaluators (public API)
 # ----------------------------------------------------------------------------- #
 
-jit_PT   = jax.jit(lambda a,b,c: calculate_properties_PT(a,b,c))
-jit_hs   = jax.jit(lambda a,b,c: calculate_properties_hs(a,b,c))
-jit_hP   = jax.jit(lambda a,b,c: calculate_properties_hP(a,b,c))
-jit_Ps   = jax.jit(lambda a,b,c: calculate_properties_Ps(a,b,c))
-jit_rhoh = jax.jit(lambda a,b,c: calculate_properties_rhoh(a,b,c))
-jit_rhop = jax.jit(lambda a,b,c: calculate_properties_rhop(a,b,c))
+if JAX_AVAILABLE:
+    jit_PT   = jax.jit(lambda a, b, c: calculate_properties_PT(a, b, c))
+    jit_hs   = jax.jit(lambda a, b, c: calculate_properties_hs(a, b, c))
+    jit_hP   = jax.jit(lambda a, b, c: calculate_properties_hP(a, b, c))
+    jit_Ps   = jax.jit(lambda a, b, c: calculate_properties_Ps(a, b, c))
+    jit_rhoh = jax.jit(lambda a, b, c: calculate_properties_rhoh(a, b, c))
+    jit_rhop = jax.jit(lambda a, b, c: calculate_properties_rhop(a, b, c))
+else:
+    # fall back to plain Python functions
+    jit_PT   = calculate_properties_PT
+    jit_hs   = calculate_properties_hs
+    jit_hP   = calculate_properties_hP
+    jit_Ps   = calculate_properties_Ps
+    jit_rhoh = calculate_properties_rhoh
+    jit_rhop = calculate_properties_rhop
 
+    
 PROPERTY_CALCULATORS = {
     fp.PT_INPUTS: jit_PT,
     fp.HmassSmass_INPUTS: jit_hs,

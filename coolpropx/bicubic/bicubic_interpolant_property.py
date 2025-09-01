@@ -1,5 +1,6 @@
 import numpy as np
-import jax.numpy as jnp
+# import jax.numpy as jnp
+from ..jax_import import jnp
 import pickle
 
 from .jax_bicubic_HEOS_interpolation_1 import compute_bicubic_coefficients_of_ij, bicubic_interpolant
