@@ -2,6 +2,7 @@ import os
 import pickle
 import coolpropx as cpx
 
+
 outdir = "fluid_tables"
 
 
